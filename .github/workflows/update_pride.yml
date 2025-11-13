@@ -3,11 +3,15 @@ name: Update Pride XML
 on:
   schedule:
     - cron: "0 */2 * * *"   # кожні 2 години
-  workflow_dispatch:        # можна запускати вручну
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    env:
+      PRIDE_CLIENT_ID: ${{ secrets.PRIDE_CLIENT_ID }}
+      PRIDE_API_KEY: ${{ secrets.PRIDE_API_KEY }}
 
     steps:
       - name: Checkout repo
@@ -32,6 +36,6 @@ jobs:
             git add docs/prideMotoChina_fixed.xml
             git commit -m "Update prideMotoChina_fixed.xml"
             git push
-          else:
+          else
             echo "Немає змін, коміт не потрібен."
           fi

@@ -4,26 +4,18 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from collections import defaultdict
 
-# URL для завантаження XML
 FILE_URL = "https://prideservice.net/files_lk/file_read.php"
-
-# Куди кладемо готовий файл (GitHub Pages -> docs/)
 OUTPUT_PATH = Path("docs/prideMotoChina_fixed.xml")
-
 
 # ---------- НАЛАШТУВАННЯ ----------
 
-# Ключові слова категорій, які треба ВИДАЛИТИ (по назві)
 BLOCKED_CATEGORY_KEYWORDS = [
     "МОТОБЛОКИ",
     "БЕНЗОПИЛЫ, ТРИММЕРЫ",
 ]
 
-# Явні ID категорій, які треба вирізати (і їх підкатегорії)
 BLOCKED_CATEGORY_IDS = {"1000000007", "1000000009"}
 
-
-# ---------- КАЛЬКУЛЯЦІЯ ЦІН ----------
 
 def calc_price_usd(p: float) -> float:
     if p < 0.1:
@@ -58,8 +50,6 @@ def transform_availability(raw: str | None) -> str:
     return raw.strip()
 
 
-# ---------- РОБОТА З КАТЕГОРІЯМИ ----------
-
 def build_category_maps(shop: ET.Element):
     cat_elem = shop.find("categories")
     id_to_name: dict[str, str] = {}
@@ -83,7 +73,6 @@ def get_blocked_category_ids(id_to_name: dict[str, str],
                              id_to_parent: dict[str, str]) -> set[str]:
     blocked: set[str] = set(BLOCKED_CATEGORY_IDS)
 
-    # по ключових словах
     for cid, name in id_to_name.items():
         upper = name.upper()
         if any(key in upper for key in BLOCKED_CATEGORY_KEYWORDS):
@@ -103,8 +92,6 @@ def get_blocked_category_ids(id_to_name: dict[str, str],
 
     return blocked
 
-
-# ---------- ОБРОБКА XML ----------
 
 def fix_structure_and_filter(text: str) -> ET.ElementTree:
     txt = text.lstrip("\ufeff").strip()
@@ -129,11 +116,9 @@ def fix_structure_and_filter(text: str) -> ET.ElementTree:
     else:
         raise RuntimeError(f"Неочікуваний корінь: <{root.tag}>")
 
-    # прибираємо categoriesUA
     for bad in list(shop.findall("categoriesUA")):
         shop.remove(bad)
 
-    # name перед currencies
     children = list(shop)
     name = shop.find("name")
     currencies = shop.find("currencies")
@@ -147,7 +132,6 @@ def fix_structure_and_filter(text: str) -> ET.ElementTree:
             ordered.append(ch)
     shop[:] = ordered
 
-    # карти категорій
     id_to_name, id_to_parent = build_category_maps(shop)
     blocked_cids = get_blocked_category_ids(id_to_name, id_to_parent)
 
@@ -209,44 +193,60 @@ def fix_structure_and_filter(text: str) -> ET.ElementTree:
     return ET.ElementTree(yml)
 
 
-# ---------- ЗАВАНТАЖЕННЯ XML ЧЕРЕЗ API ----------
-
 def download_pride_xml() -> str:
-    """
-    Тягнемо файл через file_read.php з параметрами.
-    PRIDE_CLIENT_ID і PRIDE_API_KEY беремо з env (GitHub Secrets).
-    """
     client_id = os.environ.get("PRIDE_CLIENT_ID")
     api_key = os.environ.get("PRIDE_API_KEY")
 
     if not api_key:
         raise SystemExit("Не задано PRIDE_API_KEY в env/Secrets")
 
-    # ⚠️ ТУТ МІСЦЕ, ДЕ МОЖЛИВІ ВАРІАЦІЇ НАЗВ ПАРАМЕТРІВ
-    params = {
-        "file_name": "pride0.xml",
-        "clientID": client_id,
-        "api_key": api_key,   # якщо не працює — міняєш на 'apikey' або інше
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Referer": "https://lk.prideservice.net/",
     }
 
-    print("GET", FILE_URL, "params:", params)
+    # різні варіанти параметрів, які могли придумати
+    candidate_params = []
 
-    resp = requests.get(FILE_URL, params=params, timeout=60)
-    resp.raise_for_status()
+    # з clientID
+    if client_id:
+        candidate_params.extend([
+            {"file_name": "pride0.xml", "clientID": client_id, "api_key": api_key},
+            {"file_name": "pride0.xml", "clientID": client_id, "apikey": api_key},
+            {"file_name": "pride0.xml", "clientID": client_id, "key": api_key},
+        ])
 
-    text = resp.content.decode("utf-8", errors="ignore").lstrip("\ufeff").strip()
+    # без clientID
+    candidate_params.extend([
+        {"file_name": "pride0.xml", "api_key": api_key},
+        {"file_name": "pride0.xml", "apikey": api_key},
+        {"file_name": "pride0.xml", "key": api_key},
+    ])
 
-    # Діагностика, якщо не XML
-    if not (text.startswith("<shop") or text.startswith("<yml_catalog")):
-        print("⚠ Отримано не XML. Перші 300 символів відповіді:")
-        print(text[:300])
-        raise SystemExit("PRIDE не повернув XML. Перевір назви параметрів у params.")
+    last_text = ""
+    for params in candidate_params:
+        print("Пробую запит з params:", params)
+        resp = requests.get(FILE_URL, params=params, headers=headers, timeout=60)
+        print("Статус:", resp.status_code)
+        text = resp.content.decode("utf-8", errors="ignore").lstrip("\ufeff").strip()
+        last_text = text
 
-    return text
+        if text.startswith("<shop") or text.startswith("<yml_catalog"):
+            print("✅ Знайшов XML з параметрами:", params)
+            return text
+
+        # якщо повернуло script/history.back — явно не воно, пробуємо далі
+        print("Відповідь не схожа на XML, перші 200 символів:")
+        print(text[:200])
+
+    # якщо сюди дійшли – жоден варіант не дав XML
+    print("❌ Жоден варіант параметрів не повернув XML. Остання відповідь:")
+    print(last_text[:300])
+    raise SystemExit("PRIDE не повернув XML ні з одним набором параметрів.")
 
 
 def main():
-    print("Скачую вихідний PRIDE XML через API...")
+    print("Скачую вихідний PRIDE XML через API (підбір параметрів)...")
     xml_text = download_pride_xml()
     tree = fix_structure_and_filter(xml_text)
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
